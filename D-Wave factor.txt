@@ -1,0 +1,187 @@
+
+import sys
+import time
+import logging
+import functools
+from collections import OrderedDict
+
+import dwavebinarycsp as dbc
+from dwave.system import DWaveSampler, EmbeddingComposite
+
+log = logging.getLogger(__name__)
+
+def sanitised_input(description, variable, range_):
+    start = range_[0]
+    stop = range_[-1]
+
+    while True:
+        ui = input("Input {:15}({:2} <= {:1} <= {:2}): ".format(description, start, variable, stop))
+
+        try:
+            ui = int(ui)
+        except ValueError:
+            print("The input must be an integer")
+            continue
+
+        if ui not in range_:
+            print("The entered data must be between {} and {}".format(start, stop))
+            continue
+
+        return ui
+
+def validate_input(ui, range_):
+    start = range_[0]
+    stop = range_[-1]
+
+    if not isinstance(ui, int):
+        raise ValueError("The input must be an integer")
+
+    if ui not in range_:
+        raise ValueError("The input data must be between {} and {}".format(start, stop))
+
+def factor(P):
+
+    # Build circuit
+    # =================
+    construction_start_time = time.time()
+
+    validate_input(P, range(2 ** 16))
+
+    #Constraint satisfaction problem
+    csp = dbc.factories.multiplication_circuit(8)
+
+    # Binary quadratic model
+    bqm = dbc.stitch(csp, min_classical_gap=.1)
+
+    # multiplication_circuit() Create variable
+    #p_vars = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5']
+    p_vars = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5','p6','p7','p8','p9','p10','p11','p12','p13','p14','p15']
+
+    # Convert P from decimal to binary
+    fixed_variables = dict(zip(reversed(p_vars), "{:06b}".format(P)))
+    fixed_variables = {var: int(x) for(var, x) in fixed_variables.items()}
+
+    # Fix product qubits
+    for var, value in fixed_variables.items():
+        bqm.fix_variable(var, value)
+
+    log.debug('bqm construction time: %s', time.time() - construction_start_time)
+
+    # Run program
+    # ===========
+
+    sample_time = time.time()
+
+    # Create quantum samples
+    sampler = EmbeddingComposite(DWaveSampler())
+
+    num_reads = 7000
+    sampleset = sampler.sample(bqm,
+                               num_reads=num_reads,
+                               label='Example - Factoring')
+
+    log.debug('embedding and sampling time: %s', time.time() - sample_time)
+    
+   
+    # Output result
+    # ==============
+
+    output = {
+        "Results": [],
+        #    {
+        #        "a": Number,
+        #        "b": Number,
+        #        "Valid": Boolean,
+        #        "Occurrences": Number,
+        #        "Percentage of results": Number
+        #    }
+        "Timing": {
+            "Actual": {
+                "QPU processing time": None  # In milliseconds
+            }
+        },
+        "Number of reads": None
+    }
+
+    # multiplication_circuit() These variables are created
+    #a_vars = ['a0', 'a1', 'a2']
+    #b_vars = ['b0', 'b1', 'b2']
+    a_vars = ['a0', 'a1', 'a2','a3','a4','a5','a6','a7']
+    b_vars = ['b0', 'b1', 'b2','b3','b4','b5','b6','b7']
+
+    results_dict = OrderedDict()
+    for sample, num_occurrences in sampleset.data(['sample', 'num_occurrences']):
+        # Convert A and B from binary to decimal
+        a = b = 0
+        for lbl in reversed(a_vars):
+            a = (a << 1) | sample[lbl]
+        for lbl in reversed(b_vars):
+            b = (b << 1) | sample[lbl]
+        # Convert numpy.int to int
+        a, b = int(a), int(b)
+        # Aggregate results by unique A and B values (ignore internal circuit variables)
+        if (a, b, P) in results_dict:
+            results_dict[(a, b, P)]["Occurrences"] += num_occurrences
+            results_dict[(a, b, P)]["Percentage of results"] = 100 * \
+                results_dict[(a, b, P)]["Occurrences"] / num_reads
+        else:
+            results_dict[(a, b, P)] = {"a": a,
+                                       "b": b,
+                                       "Valid": a * b == P,
+                                       "Occurrences": num_occurrences,
+                                       "Percentage of results": 100 * num_occurrences / num_reads}
+
+    output['Results'] = list(results_dict.values())
+    output['Number of reads'] = num_reads   
+
+    output['Timing']['Actual']['QPU processing time'] = sampleset.info['timing']['qpu_access_time']
+    
+    
+    
+    return output
+
+def display_output(output):
+    header1_str = 'Factors    Valid?  Percentage of Occurrences'
+    header2_str = ' ' * header1_str.index('P') + 'Numeric & Graphic Representation'
+    total_width = 80  # Assumed total console width
+    # Width available to draw bars:
+    available_width = total_width - header1_str.index('P') - 4
+
+    header_len = max(len(header1_str), len(header2_str))
+    print('-'*header_len)
+    print(header1_str)
+    print(header2_str)
+    print('-'*header_len)
+
+    #Output all data
+    #for result in output['Results']:
+    #    percentage = result['Percentage of results']
+    #    print('({:3},{:3})  {:3}     {:3.0f} '.format(result['a'], result['b'], 'Yes' if result['Valid'] else '', percentage), end='')
+    #    nbars = int(percentage/100 * available_width)
+    #    print('*' * nbars)
+    
+    #Output only data that matches the result
+    for result in output['Results']:
+        if(result['Valid']):
+            percentage = result['Percentage of results']
+            print('({:3},{:3})  {:3}     {:3.0f} '.format(result['a'], result['b'], 'Yes' if result['Valid'] else '', percentage), end='')
+            nbars = int(percentage/100 * available_width)
+            print('*' * nbars)
+    qputime=output['Timing']['Actual']['QPU processing time']/1000
+    print('Annealing time is：',qputime,'ms')
+    num_reads=output['Number of reads']
+    print('Annealing times are：',num_reads)
+
+if __name__ == '__main__':
+    # Get input from the user
+    print("Enter a number to be factored:")
+    P = sanitised_input("product", "P", range(2 ** 16))
+
+    # Quantum annealing
+    print("Running on QPU")
+    
+    output = factor(P)
+    
+    # Output result
+    display_output(output)
+    
